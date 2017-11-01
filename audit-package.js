@@ -78,15 +78,16 @@ module.exports = {
  * @param keys
  */
 auditPackagesImpl = function(depList, callback) {
+	// console.log('TKAPI');
 	// Iterate through the list until there are no elements left.
 	if(depList.length != 0) {
-		
 		var pkgs = [];
 		for(var i = 0; i < BATCH_SIZE; i++)
 		{
 			// Get the current package/version
 			var dep = depList.shift();
-			pkgs.push({pm: dep.pm, name: dep.name, version: dep.version})
+			// console.log('TKdep: ', dep.path);
+			pkgs.push({pm: dep.pm, name: dep.name, version: dep.version, path: dep.path})
 			
 			if(depList.length == 0) break;
 		}
@@ -102,6 +103,7 @@ auditPackagesImpl = function(depList, callback) {
 /** Run an audit pass against specific package versions.
  */
 auditPackageBatchImpl = function(pkgs, onResult, onComplete) {
+	// console.log('TKAPBI');
 	ossi.getPackageData(pkgs, function(error, data) {
 		if (error) {
 			onResult(error, pkgs[0]);
@@ -110,6 +112,7 @@ auditPackageBatchImpl = function(pkgs, onResult, onComplete) {
 		} else {
 			for (var i = 0; i < data.length; i++) {
 				data[i].version = pkgs[i].version;
+				data[i].path = pkgs[i].path;
 				onResult(undefined, data[i]);
 			}
 			onComplete();

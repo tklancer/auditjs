@@ -44,9 +44,6 @@ var jsontoxml = require('jsontoxml');
 // File system access
 var fs = require('fs');
 
-// Use winston for logging
-const winston = require('winston');
-
 // Next two requires used to get version from out package.json file
 var path = require('path');
 var pkg = require( path.join(__dirname, 'package.json') );
@@ -98,8 +95,6 @@ var auditLookup = {};
  */
 var vulnerabilityCount = 0;
 
-const LOGGER_LEVELS = ['error', 'warn', 'info', 'verbose', 'debug'];
-
 //Parse command line options. We currently support only one argument so
 // this is a little overkill. It allows for future growth.
 var program = require('commander');
@@ -109,12 +104,10 @@ program
         .option('-n --noNode', 'Ignore node executable when scanning node_modules.')
         .option('-p --package <file>', 'Specific package.json or bower.json file to audit')
         .option('-d --dependencyTypes <list>', 'One or more of devDependencies, dependencies, peerDependencies, bundledDependencies, or optionalDependencies')
-        .option('--prod --production', 'Analyze production dependencies only')
         .option('-q --quiet', 'Supress console logging')
         .option('-r --report', 'Create JUnit reports in reports/ directory')
         .option('-v --verbose', 'Print all vulnerabilities')
-        .option('-w --whitelist <file>', 'Whitelist of vulnerabilities that should not break the build,\n\t\t\t\t e.g. XSS vulnerabilities for an app with no possbile input for XSS.\n\t\t\t\t See Example test_data/audit_package_whitelist.json.')
-        .option('-l --level <level>', 'Logging level. Possible options: ' + LOGGER_LEVELS)
+        .option('-w --whitelist <file>', 'Whitelist of vulnerabilities that should not break the build,\n\t\t\t\t e.g. XSS vulnerabilities for an app with no possbile input for XSS.\b\t\t\t\t                                 See Example test_data/audit_package_whitelist.json.')
         .action(function () {
         });
 
@@ -123,75 +116,19 @@ program.on('--help', function(){
 });
 
 program.parse(process.argv);
+if(program['quiet']){
+        console.log = function(){};
+        process.stdout.write = function(){};
+}
 if(program['bower'] && !program['package']){
         throw Error('Use -b option together with -p bower.json. Bower dependencies are flat, therefore it is enough to only support the auditing of bower.json files.');
 }
 var programPackage = program['package'] ? path.basename(program['package']): 'scan_node_modules.json';
 var output = `${programPackage.toString().split('.json').slice(0, -1)}.xml`;
-var pm = program['bower'] ? 'bower' : 'npm';
+var pm = program['bower'] ? 'bower' : 'npm'
 
-if (program['dependencyTypes'] && program['production']) {
-  throw Error('Cannot use --dependencyTypes and --production options together');
-}
-
-//Set logging level based on environmental value or flag
-let logger = undefined;
-if (program['quiet']) {
-  logger = new (winston.Logger)();
-} else {
-  logger = new (winston.Logger)({
-    transports: [
-      new (winston.transports.Console)({
-        level: process.env.LOG_LEVEL ||
-          (program['quiet']?'error':false) ||
-          (program['verbose']?'verbose':false) ||
-          (LOGGER_LEVELS.includes(program['level'])?program['level']:false)
-          || 'info',
-        formatter: logFormatter})
-    ]
-  });
-}
-
-/** Hack code to allow us to check if a specific logger level is enabled.
- */
-logger.isLevelEnabled = function(level) {
-  if (this.transports) {
-    var levels = this.transports.console.level;
-    return levels == level;
-  }
-  return false;
-};
-
-// Categories are somewhat complicated in order to not break backward-compatibility.
-var categories = [];
-if (program['package']) {
-  // By default in package mode we only check production dependencies
-  categories = ['dependencies'];
-}
-
-// The --production option means do dependencies
-if (program['production']) {
-  categories = ['dependencies'];
-}
-
+var categories = ['dependencies'];
 categories = program['dependencyTypes'] ? program['dependencyTypes'].split(",") : categories;
-
-// For recursive dependencies 'dependencies' should be '_dependencies'
-if (!program['package']) {
-  newCategories = [];
-  for (var i = 0; i < categories.length; i++) {
-    switch (categories[i]) {
-      case 'dependencies':
-        newCategories.push('_dependencies');
-        break;
-      default:
-        newCategories.push(categories[i]);
-        break;
-    }
-  }
-  categories = newCategories;
-}
-
 
 // Simplify the white-list so that it is a simple lookup table of vulnerability IDs.
 var whitelist = program['whitelist'] ? fs.readFileSync(program['whitelist'], 'utf-8') : null;
@@ -205,10 +142,12 @@ var whitelistedVulnerabilities = [];
 if (!program["package"]) {
         npm.load(function(err, npm) {
                 npm.commands.ls([], true, function(err, data, lite) {
+                        // for (var key in data.dependencies) {
+                        //     printDeps("", data.dependencies[key]);
+                        // }
+
                         // Get a flat list of dependencies instead of a map.
-                        var depObjectLookup = buildDependencyObjectLookup(data);
-                        var dataDeps = getDepsFromDataObject(data, depObjectLookup);
-                        var deps = getDependencyList(dataDeps, depObjectLookup);
+                        var deps = getDependencyList("", data.dependencies);
                         if(program.noNode) {
                                 // Set the number of expected audits
                                 expectedAudits = deps.length;
@@ -264,14 +203,14 @@ else {
         	var category = categories[i];
             if(targetPkg[category] != undefined) {
                 // Get a flat list of dependencies instead of a map.
-            	var myDeps = getDependencyList(targetPkg[category]);
+            	var myDeps = getDependencyList("", targetPkg[category]);
             	if (myDeps) {
             		// getDependencyList avoids duplicates, so we can just append
             		deps = deps.concat(myDeps);
             	}
             }
         }
-
+        
         expectedAudits = deps.length;
         auditor.auditPackages(deps, resultCallback);
 }
@@ -284,16 +223,16 @@ else {
  */
 function exitHandler(options, err) {
 	if (whitelistedVulnerabilities.length > 0) {
-        logger.info(colors.bold.yellow("Filtering the following vulnerabilities"));
-        logger.info(colors.bold.yellow('=================================================='));
+        console.log(colors.bold.yellow("Filtering the following vulnerabilities"));
+        console.log(colors.bold.yellow('=================================================='));
         for (var i = 0; i < whitelistedVulnerabilities.length; i++) {
         	var detail = whitelistedVulnerabilities[i];
-            logger.info(`${colors.bold.blue(detail['title'])} affected versions: ${colors.red(detail['package'])} ${colors.red(detail['versions'])}`);
-            logger.info(`${detail['description']}`);
-            logger.info(colors.bold.yellow('=================================================='));
+            console.log(`${colors.bold.blue(detail['title'])} affected versions: ${colors.red(detail['package'])} ${colors.red(detail['versions'])}`);
+            console.log(`${detail['description']}`);
+            console.log(colors.bold.yellow('=================================================='));
         };
 	}
-
+	
     if(program['report']) {
         var filtered = 0;
         mkdirp('reports');
@@ -310,7 +249,7 @@ function exitHandler(options, err) {
         dom.documentElement.setAttribute('skipped', expectedAudits-actualAudits);
         dom.documentElement.setAttribute('failures', vulnerabilityCount-filtered);
         JUnit = new XMLSerializer().serializeToString(dom);
-        logger.info( `Wrote JUnit report to reports/${output}`);
+        console.log( `Wrote JUnit report to reports/${output}`);
         fs.writeFileSync('reports/' + output, `<?xml version="1.0" encoding="UTF-8"?>\n${JUnit}`);
         // Report mode is much like a test mode where builds shouldn't fail if the report was created.
         vulnerabilityCount = 0;
@@ -324,22 +263,28 @@ function exitHandler(options, err) {
  */
 function prepareWhitelist(whitelist) {
 	if(whitelist){
-        logger.info(colors.bold('Applying whitelist filtering for JUnit reports. Take care to keep the whitelist up to date!'));
+        console.log(colors.bold('Applying whitelist filtering for JUnit reports. Take care to keep the whitelist up to date!'));
 
 		// The white-list is either a list or the old format, which is an object with more
 		// complex structures.
 	    whitelist = JSON.parse(whitelist);
-
+	    
 	    // If we are using the old white list format, then convert it to the simplified format
 	    if (!Array.isArray(whitelist)) {
+            console.log('TKOLD WHITELIST');
 	    	whitelist = simplifyWhitelist(whitelist);
 	    }
-
+	    
 	    // Convert the list to a map for easy lookup
 	    var whitelistMap = {};
 	    for (var i = 0; i < whitelist.length; i++) {
 	    	var key = whitelist[i];
-	    	whitelistMap[key] = key;
+            if (typeof key.id !== 'undefined'){
+                whitelistMap[key.id] = key;
+            }
+            else {
+                whitelistMap[key] = key;
+            }
 	    }
 	    whitelist = whitelistMap;
 	}
@@ -355,7 +300,8 @@ function simplifyWhitelist(whitelist) {
 		var vlist = whitelist[project];
 		for (var i = 0; i < vlist.length; i++) {
 			var id = vlist[i].id;
-			results.push(id);
+            var path = vlist[i].path;
+			results.push({id, path});
 		}
 	}
 	return results;
@@ -386,100 +332,57 @@ function checkProperties(obj) {
         return true;
 }
 
-/** Each specific package@version is only represented with the complete
- * dependency definitions once in the tree, but might not be where we need it.
- * Therefore we make a special lookup table
- * of package@version = [Object] which will be referenced later.
- */
-function buildDependencyObjectLookup(data, lookup) {
-  if (lookup == undefined) {
-    lookup = {};
-  }
-  for(var k in data.dependencies) {
-    var dep = data.dependencies[k];
-    lookup[dep._from] = dep;
-    buildDependencyObjectLookup(dep, lookup);
-  }
-  return lookup;
-}
-
 /** Recursively get a flat list of dependency objects. This is simpler for
  * subsequent code to handle then a tree of dependencies.
  *
- * Depending on the command line arguments, the dependencies may includes
- * a mix of production, development, optional, etc. dependencies.
+ * @param depMap
+ * @returns A list of dependency objects
  */
-function getDependencyList(depMap, depLookup) {
-  var results = [];
-  var lookup = {};
-  var keys = Object.keys(depMap);
+function getDependencyList(rootPath, depMap) {
+    console.log('TKstarting with', rootPath);
+        var results = [];
+        var lookup = {};
+        var keys = Object.keys(depMap);
+        for(var i = 0; i < keys.length; i++) {
+                var name = keys[i];
+                var currentPath = rootPath === '' ? name : rootPath + '/' + name
 
-  for(var i = 0; i < keys.length; i++) {
-    var name = keys[i];
+                // The value of o depends on the type of structure we are passed
+                var o = depMap[name];
+                if(o.version) {
+                        // Only add a dependency once
+                        if(lookup[name + o.version] == undefined) {
+                                lookup[name + o.version] = true;
+                                // We need both the local and global "auditLookup" tables.
+                                // The global lookup is used to ensure we only audit a
+                                // dependency once, but cannot be done at the same level
+                                // as the local lookup since the sub-dependencies are not
+                                // available at all locations of the dependency tree (depMap).
+                                if (auditLookup[name + o.version] == undefined) {
+									auditLookup[name + o.version] = true;
+									results.push({"pm": pm, "name": name, "version": o.version, "path": currentPath});
+								}
+                                if(o.dependencies) {
+                                        var deps = getDependencyList(currentPath, o.dependencies);
 
-    // The value of o depends on the type of structure we are passed
-    var o = depMap[name];
-
-    var spec = o.version ? name + "@" + o.version : o;
-    var version = o.version ? o.version : o;
-
-    // Only add a dependency once
-    if(lookup[spec] == undefined) {
-      lookup[spec] = true;
-      // We need both the local and global "auditLookup" tables.
-      // The global lookup is used to ensure we only audit a
-      // dependency once, but cannot be done at the same level
-      // as the local lookup since the sub-dependencies are not
-      // available at all locations of the dependency tree (depMap).
-      if (auditLookup[spec] == undefined) {
-				auditLookup[spec] = true;
-				results.push({"pm": pm, "name": name, "version": version});
-			}
-
-      // If there is a possibility of recursive dependencies...
-      if (o.version) {
-        var dataDeps = getDepsFromDataObject(o, depLookup);
-        if(dataDeps) {
-          var deps = getDependencyList(dataDeps, depLookup);
-
-          if(deps != undefined) {
-            results = results.concat(deps);
-          }
+                                        if(deps != undefined) {
+                                                results = results.concat(deps);
+                                        }
+                                }
+                        }
+                }
+                else {
+                        // Only add a dependency once
+                        if(lookup[name + o] == undefined) {
+                                lookup[name + o] = true;
+                                if (auditLookup[name + o] == undefined) {
+									auditLookup[name + o] = true;
+									results.push({"pm": pm, "name": name, "version": o, "path": currentPath});
+								}
+                        }
+                }
         }
-      }
-    }
-  }
-  return results;
-}
-
-/** Get the dependencies from an npm object. The exact dependencies retrieved
- * depend on categories requested by the user.
- */
-function getDepsFromDataObject(data, lookup) {
-  var results = {};
-  if (categories.length == 0) {
-    for(var k in data.dependencies) {
-      results[k]=data.dependencies[k];
-    }
-  }
-
-  if (lookup) {
-    for (var i = 0; i < categories.length; i++) {
-      var category = categories[i];
-      for(var k in data[category]) {
-        var spec = k + "@" + data[category][k];
-        // Sometimes a match is not quite exact
-        if (!lookup[spec]) {
-          spec = spec.replace(/@\D/g,'@');
-        }
-        // If there is no match in the lookup then this dependency was "deduped"
-        if (lookup[spec]) {
-          results[k]=lookup[spec];
-        }
-      }
-    }
-  }
-  return results;
+        return results;
 }
 
 /** Help text
@@ -516,6 +419,7 @@ function usage() {
  * @returns
  */
 function resultCallback(err, pkg) {
+    console.log('TKgot callback', pkg.name);
         pkgName = undefined;
         version = undefined;
         versionString = undefined;
@@ -531,66 +435,57 @@ function resultCallback(err, pkg) {
 
         // If we KNOW a possibly used version is vulnerable then highlight the
         // title in red.
-        var myVulnerabilities = getValidVulnerabilities(version, pkg.vulnerabilities, pkg.name);
-        var prefix = undefined;
+        var myVulnerabilities = getValidVulnerabilities(version, pkg.vulnerabilities, pkg.name, pkg.path);
         if(myVulnerabilities.length > 0) {
                 vulnerabilityCount += 1;
-                logger.error("------------------------------------------------------------");
-                prefix = "[" + actualAudits + "/" + expectedAudits + "] " + colors.bold.red(pkgName + " " + versionString + "  [VULNERABLE]") + "   ";
-                if (logger.isLevelEnabled("verbose")) {
-
-                  logger.verbose(prefix);
-                  prefix = "";
-                }
+                console.log("------------------------------------------------------------");
+                console.log("[" + actualAudits + "/" + expectedAudits + "] " + colors.bold.red(pkgName + " " + versionString + "  [VULNERABLE]") + "   ");
                 JUnit['testsuite'].push({name: 'testcase', attrs: {name: pkg.name}, children: [{
                         name: 'failure', text: `Details:\n
                         ${JSON.stringify(myVulnerabilities, null, 2).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')}\n\n`,
                         attrs: {message:`Found ${myVulnerabilities.length} vulnerabilities. See stacktrace for details.`}}]});
         }
         else {
-                logger.verbose("------------------------------------------------------------");
-                prefix = "[" + actualAudits + "/" + expectedAudits + "] " + colors.bold(pkgName + " " + versionString) + "   ";
-                if (logger.isLevelEnabled("verbose")) {
-
-                  logger.verbose(prefix);
-                  logger.verbose();
-                  prefix = "";
-                }
+                if(program.verbose) console.log("------------------------------------------------------------");
+                process.stdout.write("[" + actualAudits + "/" + expectedAudits + "] " + colors.bold(pkgName + " " + versionString) + "   ");
+                if(program.verbose) console.log();
                 JUnit['testsuite'].push({name: 'testcase', attrs: {name: pkg.name}});
         }
 
         if(err) {
                 if(err.error) {
-                        logger.error(prefix + colors.bold.red("Error running audit: " + err.error + " (" + err.code + ")"));
+                        console.log(colors.bold.red("Error running audit: " + err.error + " (" + err.code + ")"));
                 }
                 else {
-                        logger.error(prefix + colors.bold.red("Error running audit: " + err));
+                        console.log(colors.bold.red("Error running audit: " + err));
                 }
                 if(err.stack) {
-                        logger.error(prefix + err.stack);
+                        console.log(err.stack);
                 }
                 return;
         }
 
         // Print information about the expected and actual package versions
-        if(semver.valid(version)) {
-                if(bestVersion) {
-                        if(bestVersion != version) {
-                                logger.verbose(colors.bold.yellow("Installed version: " + version));
+        if(program.verbose) {
+                if(semver.valid(version)) {
+                        if(bestVersion) {
+                                if(bestVersion != version) {
+                                        console.log(colors.bold.yellow("Installed version: " + version));
+                                }
+                                else {
+                                        console.log("Installed version: " + version);
+                                }
+                                console.log("Available version: " + bestVersion);
                         }
                         else {
-                                logger.verbose("Installed version: " + version);
+                                console.log("Installed version: " + version);
                         }
-                        logger.verbose("Available version: " + bestVersion);
                 }
                 else {
-                        logger.verbose("Installed version: " + version);
-                }
-        }
-        else {
-                logger.verbose("Requested range: " + version);
-                if(bestVersion) {
-                        logger.verbose("Available version: " + bestVersion);
+                        console.log("Requested range: " + version);
+                        if(bestVersion) {
+                                console.log("Available version: " + bestVersion);
+                        }
                 }
         }
 
@@ -600,36 +495,32 @@ function resultCallback(err, pkg) {
                 // Special statuses
                 if(pkg.vulnerabilities.length == 0) {
                         // FIXME: We should always get some response. This should not happen.
-                        logger.info(prefix + colors.grey("No known vulnerabilities..."));
+                        console.log(colors.grey("No known vulnerabilities..."));
                 }
                 // Vulnerabilities found
                 else {
-                        var log = logger.error;
                         // Status line
-                        if (myVulnerabilities.length == 0) {
-                          log = logger.info;
-                        }
-                        log(prefix + pkg.vulnerabilities.length + " known vulnerabilities, " + myVulnerabilities.length + " affecting installed version");
+                        console.log(pkg.vulnerabilities.length + " known vulnerabilities, " + myVulnerabilities.length + " affecting installed version");
 
                         // By default only print known problems
                         var printTheseProblems = myVulnerabilities;
 
                         // If verbose, print all problems
-                        if (logger.isLevelEnabled("verbose")) {
+                        if(program.verbose) {
                                 printTheseProblems = pkg.vulnerabilities;
                         }
 
                         // We have decided that these are the problems worth mentioning.
                         for(var i = 0; i < printTheseProblems.length; i++) {
-                                log();
+                                console.log();
 
                                 var detail = printTheseProblems[i];
-                                log(colors.red.bold(detail.title));
+                                console.log(colors.red.bold(detail.title));
 
                                 if(detail.description != undefined) {
-                                        log(entities.decode(detail.description));
+                                        console.log(entities.decode(detail.description));
                                 }
-                                log();
+                                console.log();
 
                                 // Print affected version information if available
                                 if(detail.versions != null && detail.versions.length > 0) {
@@ -637,34 +528,36 @@ function resultCallback(err, pkg) {
                                         if(vers.trim() == "") {
                                                 vers = "unspecified";
                                         }
-                                        log(colors.bold("Affected versions") + ": " + vers);
+                                        console.log(colors.bold("Affected versions") + ": " + vers);
                                 }
                                 else {
-                                        log(colors.bold("Affected versions") + ": unspecified");
+                                        console.log(colors.bold("Affected versions") + ": unspecified");
                                 }
 
                                 if (detail.references != undefined && detail.references.length > 0) {
-                                        log(colors.bold("References") + ":");
+                                        console.log(colors.bold("References") + ":");
                                         for (var j = 0; j < detail.references.length; j++) {
-                                                log("  * " + detail.references[j]);
+                                                console.log("  * " + detail.references[j]);
                                         }
                                 }
                         }
 
                         // If we printed vulnerabilities we need a separator. Don't bother
                         // if we are running in verbose mode since one will be printed later.
-                        if(!logger.isLevelEnabled("verbose") && myVulnerabilities.length > 0) {
-                                logger.error("------------------------------------------------------------");
-                                logger.error();
+                        if(!program.verbose && myVulnerabilities.length > 0) {
+                                console.log("------------------------------------------------------------");
+                                console.log();
                         }
                 }
         } else {
-                logger.info(prefix + colors.grey("No known vulnerabilities..."));
+                console.log(colors.grey("No known vulnerabilities..."));
         }
 
-        // Print a separator
-        logger.verbose("------------------------------------------------------------");
-        logger.verbose();
+        if(program.verbose) {
+                // Print a separator
+                console.log("------------------------------------------------------------");
+                console.log();
+        }
 
         //console.log(JSON.stringify(pkg.artifact));
 }
@@ -678,12 +571,12 @@ function resultCallback(err, pkg) {
  * @param details Vulnerability details
  * @returns
  */
-function getValidVulnerabilities(productRange, details, pkg) {
+function getValidVulnerabilities(productRange, details, pkg, path) {
         var results = [];
         if(details != undefined) {
                 for(var i = 0; i < details.length; i++) {
                         var detail = details[i];
-
+                        
                         if(detail.versions != undefined && detail.versions.length > 0) {
                                 for(var j = 0; j < detail.versions.length; j++) {
                                         // Get the vulnerability range
@@ -692,10 +585,26 @@ function getValidVulnerabilities(productRange, details, pkg) {
                                         if(rangesOverlap(productRange, vulnRange)) {
                                         		// Do we white-list this match?
 	                                            var id = detail.id;
+                                                console.log('TKCHECKING WHITELIST FOR ID: ', id);
 	                                            if (whitelist && whitelist[id]) {
-	                                            	detail["package"] = pkg;
-	                                            	whitelistedVulnerabilities.push(detail);
-	                                            	break;
+                                                    if (typeof whitelist[id] === 'object') {
+                                                        //Check path
+                                                        var pathRegex = whitelist[id].path;
+                                                        console.log('TKpath: ', path)
+                                                        console.log('TKregex ', pathRegex);
+                                                        if (path.match(pathRegex).index === 0) {
+                                                            console.log('TKSKIPPING');
+                                                            detail["package"] = pkg;
+                                                            detail["path"] = path;
+                                                            whitelistedVulnerabilities.push(detail);
+                                                            break;
+                                                        }
+                                                    }
+                                                    else {
+    	                                            	detail["package"] = pkg;
+    	                                            	whitelistedVulnerabilities.push(detail);
+    	                                            	break;
+                                                    }
 	                                            }
 
                                                 results.push(detail);
@@ -770,12 +679,4 @@ function forceSemanticVersion(range) {
                 return match[1] + "." + match[2] + "." + match[3];
         }
         return undefined;
-}
-
-/** Overriding the winston formatter to output a log message in the same manner
- * that console.log was working, to reduce the inpact on the code for the
- * initial move to winston.
- */
-function logFormatter(args) {
-  return args.message;
 }
